@@ -15,14 +15,16 @@ from pathlib import Path
 
 import modal
 
+from utils import PROJECT_ROOT, tee_output, timestamped_output_dir, write_histories_csv
+
 
 app = modal.App("compare-muon-hmuon-h100")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("torch", "matplotlib")
-    .add_local_dir("models", "/root/models")
-    .add_local_dir("optimizers", "/root/optimizers")
+    .add_local_dir(str(PROJECT_ROOT / "models"), "/root/models")
+    .add_local_dir(str(PROJECT_ROOT / "optimizers"), "/root/optimizers")
 )
 
 
@@ -189,27 +191,38 @@ def main(
     batch_size: int = 2048,
     lr: float = 0.01,
     seed: int = 0,
-    output_dir: str = "results_hmuon_modal",
+    output_dir: str = "results",
 ) -> None:
-    result = train_on_h100.remote(
-        steps=steps,
-        batch_size=batch_size,
-        lr=lr,
-        seed=seed,
-    )
-
-    output_path = Path(output_dir)
-    save_plots(result, output_path)
-
-    print(f"Device: {result['device']}")
-    print(f"steps={result['steps']} batch_size={result['batch_size']} lr={result['lr']}")
-    for name in ("muon", "hmuon"):
-        hist = result[name]
-        print(
-            f"{name:5s}: "
-            f"train_loss={hist['train_loss'][-1]:.4f}, "
-            f"val_loss={hist['val_loss'][-1]:.4f}, "
-            f"val_acc={hist['val_acc'][-1]:.4f}, "
-            f"sec_per_step={hist['sec_per_step'][-1]:.4f}"
+    output_path = timestamped_output_dir("compare_muon_hmuon_modal", output_dir)
+    with tee_output(output_path):
+        result = train_on_h100.remote(
+            steps=steps,
+            batch_size=batch_size,
+            lr=lr,
+            seed=seed,
         )
-    print(f"Saved plots to {output_path.resolve()}")
+        save_plots(result, output_path)
+        write_histories_csv(
+            output_path / "history.csv",
+            {"muon": result["muon"], "hmuon": result["hmuon"]},
+            metadata={
+                "steps": result["steps"],
+                "batch_size": result["batch_size"],
+                "lr": result["lr"],
+                "seed": seed,
+                "device": result["device"],
+            },
+        )
+
+        print(f"Device: {result['device']}")
+        print(f"steps={result['steps']} batch_size={result['batch_size']} lr={result['lr']}")
+        for name in ("muon", "hmuon"):
+            hist = result[name]
+            print(
+                f"{name:5s}: "
+                f"train_loss={hist['train_loss'][-1]:.4f}, "
+                f"val_loss={hist['val_loss'][-1]:.4f}, "
+                f"val_acc={hist['val_acc'][-1]:.4f}, "
+                f"sec_per_step={hist['sec_per_step'][-1]:.4f}"
+            )
+        print(f"Saved plots, terminal log, and CSV values to {output_path.resolve()}")

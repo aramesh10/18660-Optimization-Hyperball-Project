@@ -19,6 +19,10 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from utils import ensure_project_root_on_path, tee_output, timestamped_output_dir, write_histories_csv
+
+ensure_project_root_on_path()
+
 from models.simple_mlp import init_mlp_weights, make_teacher_dataset, mlp_forward
 from optimizers.hmuon import hmuon_step, normalize_R
 from optimizers.muon import adjust_lr, muon_step
@@ -168,6 +172,18 @@ def run_experiment(
     hmuon = train("hmuon", **train_kwargs)
 
     plot_comparison(muon, hmuon, lr, output_dir / f"muon_vs_hmuon_lr_{lr:g}.png")
+    write_histories_csv(
+        output_dir / f"history_lr_{lr:g}.csv",
+        {"muon": muon, "hmuon": hmuon},
+        metadata={
+            "lr": lr,
+            "steps": steps,
+            "batch_size": batch_size,
+            "beta": beta,
+            "seed": seed,
+            "adjust_lr_mode": adjust_lr_mode or "none",
+        },
+    )
 
     print(f"\nlr = {lr:g}")
     print(
@@ -187,7 +203,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--beta", type=float, default=0.95)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output-dir", type=Path, default=Path("results_hmuon"))
+    parser.add_argument("--output-dir", type=Path, default=Path("results"))
     parser.add_argument(
         "--adjust-lr-mode",
         choices=["none", "original", "match_rms_adamw"],
@@ -196,11 +212,13 @@ def main() -> None:
     )
     args = parser.parse_args()
     adjust_lr_mode = None if args.adjust_lr_mode == "none" else args.adjust_lr_mode
+    output_dir = timestamped_output_dir("compare_muon_hmuon", args.output_dir)
 
-    for lr in args.lrs:
-        run_experiment(lr, args.steps, args.batch_size, args.beta, args.seed, args.output_dir, adjust_lr_mode)
+    with tee_output(output_dir):
+        for lr in args.lrs:
+            run_experiment(lr, args.steps, args.batch_size, args.beta, args.seed, output_dir, adjust_lr_mode)
 
-    print(f"\nSaved plots to {args.output_dir.resolve()}")
+        print(f"\nSaved plots and CSV values to {output_dir.resolve()}")
 
 
 if __name__ == "__main__":

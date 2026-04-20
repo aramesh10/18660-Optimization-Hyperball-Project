@@ -1,7 +1,7 @@
 """Train NanoGPT (GPT-2 124M) on text data with Muon vs hMuon on Modal H100.
 
 Both runs start from identical random initialization and train on the same data.
-Results: train loss, val loss, and MFU curves saved to results_nanogpt/.
+Results: train loss, val loss, and MFU curves saved to timestamped folders under results/.
 
 Datasets
 --------
@@ -10,23 +10,25 @@ Datasets
   shakespeare  – TinyShakespeare (~1 MB, char-level, fast to load)
 
 Usage:
-    modal run train_nanogpt_modal.py
-    modal run train_nanogpt_modal.py --dataset wikitext103
-    modal run train_nanogpt_modal.py --dataset shakespeare
-    modal run train_nanogpt_modal.py --steps 5000 --lr-muon 0.02
+    modal run src/train_nanogpt_modal.py
+    modal run src/train_nanogpt_modal.py --dataset wikitext103
+    modal run src/train_nanogpt_modal.py --dataset shakespeare
+    modal run src/train_nanogpt_modal.py --steps 5000 --lr-muon 0.02
 """
 
 from __future__ import annotations
 from pathlib import Path
 import modal
 
+from utils import PROJECT_ROOT, tee_output, timestamped_output_dir, write_histories_csv
+
 app = modal.App("nanogpt-muon-vs-hmuon")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install("torch", "numpy", "matplotlib", "requests", "tiktoken", "datasets")
-    .add_local_dir("models", "/root/models")
-    .add_local_dir("optimizers", "/root/optimizers")
+    .add_local_dir(str(PROJECT_ROOT / "models"), "/root/models")
+    .add_local_dir(str(PROJECT_ROOT / "optimizers"), "/root/optimizers")
 )
 
 
@@ -297,26 +299,39 @@ def main(
     block_size: int = 1024,
     lr_muon: float = 0.02,
     seed: int = 42,
-    output_dir: str = "results_nanogpt",
+    output_dir: str = "results",
 ) -> None:
-    result = train.remote(
-        dataset=dataset,
-        steps=steps,
-        batch_size=batch_size,
-        block_size=block_size,
-        lr_muon=lr_muon,
-        seed=seed,
-    )
+    out = timestamped_output_dir("train_nanogpt_modal", output_dir)
+    with tee_output(out):
+        result = train.remote(
+            dataset=dataset,
+            steps=steps,
+            batch_size=batch_size,
+            block_size=block_size,
+            lr_muon=lr_muon,
+            seed=seed,
+        )
+        save_plots(result, out)
+        write_histories_csv(
+            out / "history.csv",
+            {"muon": result["muon"], "hmuon": result["hmuon"]},
+            metadata={
+                "dataset": result["dataset"],
+                "steps": result["steps"],
+                "batch_size": batch_size,
+                "block_size": block_size,
+                "lr_muon": lr_muon,
+                "seed": seed,
+                "device": result["device"],
+            },
+        )
 
-    out = Path(output_dir)
-    save_plots(result, out)
-
-    print(f"\nDevice  : {result['device']}")
-    print(f"Dataset : {result['dataset']}")
-    print(f"Steps   : {result['steps']}")
-    print(f"\n{'Optimizer':<8} {'Final train':>12} {'Final val':>10}")
-    print("-" * 35)
-    for name in ("muon", "hmuon"):
-        h = result[name]
-        print(f"{name:<8} {h['train_loss'][-1]:>12.4f} {h['val_loss'][-1]:>10.4f}")
-    print(f"\nPlots saved to {out.resolve()}/")
+        print(f"\nDevice  : {result['device']}")
+        print(f"Dataset : {result['dataset']}")
+        print(f"Steps   : {result['steps']}")
+        print(f"\n{'Optimizer':<8} {'Final train':>12} {'Final val':>10}")
+        print("-" * 35)
+        for name in ("muon", "hmuon"):
+            h = result[name]
+            print(f"{name:<8} {h['train_loss'][-1]:>12.4f} {h['val_loss'][-1]:>10.4f}")
+        print(f"\nPlots, terminal log, and CSV values saved to {out.resolve()}/")

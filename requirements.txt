@@ -1,0 +1,7 @@
+torch
+matplotlib
+modal
+numpy
+requests
+tiktoken
+datasets

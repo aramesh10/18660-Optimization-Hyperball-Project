@@ -8,8 +8,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import torch
+
+from utils import ensure_project_root_on_path, tee_output, timestamped_output_dir, write_rows_csv
+
+ensure_project_root_on_path()
 
 from optimizers.muon import (
     DEFAULT_A,
@@ -40,6 +45,7 @@ def run_comparison(
     steps: int,
     seed: int,
     adjust_lr_mode: str | None,
+    output_dir: Path,
 ) -> None:
     TorchMuon = get_torch_muon()
 
@@ -63,8 +69,11 @@ def run_comparison(
         adjust_lr_fn=adjust_lr_mode,
     )
 
-    print("step  max_abs_diff  mean_abs_diff")
-    print("-----------------------------------")
+    lines = [
+        "step  max_abs_diff  mean_abs_diff",
+        "-----------------------------------",
+    ]
+    rows = []
 
     for step, grad in enumerate(fixed_grads, start=1):
         with torch.no_grad():
@@ -84,11 +93,34 @@ def run_comparison(
         torch_optimizer.zero_grad(set_to_none=True)
 
         diff = (ours - torch_param.detach()).abs()
-        print(f"{step:4d}  {diff.max().item():12.6g}  {diff.mean().item():13.6g}")
+        max_abs_diff = diff.max().item()
+        mean_abs_diff = diff.mean().item()
+        lines.append(f"{step:4d}  {max_abs_diff:12.6g}  {mean_abs_diff:13.6g}")
+        rows.append(
+            {
+                "step": step,
+                "max_abs_diff": max_abs_diff,
+                "mean_abs_diff": mean_abs_diff,
+                "ours_norm": ours.norm().item(),
+                "torch_norm": torch_param.detach().norm().item(),
+            }
+        )
 
-    print("\nFinal check")
-    print(f"ours  ||W||_F = {ours.norm().item():.6f}")
-    print(f"torch ||W||_F = {torch_param.detach().norm().item():.6f}")
+    lines.extend(
+        [
+            "",
+            "Final check",
+            f"ours  ||W||_F = {ours.norm().item():.6f}",
+            f"torch ||W||_F = {torch_param.detach().norm().item():.6f}",
+        ]
+    )
+    output = "\n".join(lines)
+    print(output)
+
+    output_path = output_dir / "comparison.txt"
+    output_path.write_text(output + "\n", encoding="utf-8")
+    write_rows_csv(output_dir / "comparison.csv", rows)
+    print(f"\nSaved comparison to {output_path.resolve()}")
 
 
 def main() -> None:
@@ -101,6 +133,7 @@ def main() -> None:
     parser.add_argument("--no-nesterov", action="store_true")
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--output-dir", type=Path, default=Path("results"))
     parser.add_argument(
         "--adjust-lr-mode",
         choices=["none", "original", "match_rms_adamw"],
@@ -109,21 +142,24 @@ def main() -> None:
     args = parser.parse_args()
 
     adjust_lr_mode = None if args.adjust_lr_mode == "none" else args.adjust_lr_mode
-    run_comparison(
-        shape=(args.rows, args.cols),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        momentum=args.momentum,
-        nesterov=not args.no_nesterov,
-        steps=args.steps,
-        seed=args.seed,
-        adjust_lr_mode=adjust_lr_mode,
-    )
+    output_dir = timestamped_output_dir("compare_muon_pytorch", args.output_dir)
+    with tee_output(output_dir):
+        try:
+            run_comparison(
+                shape=(args.rows, args.cols),
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                momentum=args.momentum,
+                nesterov=not args.no_nesterov,
+                steps=args.steps,
+                seed=args.seed,
+                adjust_lr_mode=adjust_lr_mode,
+                output_dir=output_dir,
+            )
+        except RuntimeError as exc:
+            print(exc)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except RuntimeError as exc:
-        print(exc)
-        sys.exit(1)
+    main()
