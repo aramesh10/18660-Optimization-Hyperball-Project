@@ -34,6 +34,8 @@ def timestamped_output_dir(run_name: str, output_root: str | Path = RESULTS_ROOT
 class _Tee:
     def __init__(self, *streams):
         self.streams = streams
+        self.encoding = getattr(streams[0], "encoding", "utf-8")
+        self.errors = getattr(streams[0], "errors", "strict")
 
     def write(self, data: str) -> int:
         for stream in self.streams:
@@ -44,14 +46,26 @@ class _Tee:
         for stream in self.streams:
             stream.flush()
 
+    def isatty(self) -> bool:
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+
+    def fileno(self) -> int:
+        return self.streams[0].fileno()
+
 
 @contextmanager
-def tee_output(output_dir: Path, filename: str = "terminal.log"):
+def tee_output(output_dir: Path, filename: str = "terminal.log", capture_stderr: bool = True):
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / filename
     with log_path.open("w", encoding="utf-8") as log_file:
-        with redirect_stdout(_Tee(sys.stdout, log_file)), redirect_stderr(_Tee(sys.stderr, log_file)):
-            yield log_path
+        stdout_tee = _Tee(sys.stdout, log_file)
+        stderr_tee = _Tee(sys.stderr, log_file)
+        with redirect_stdout(stdout_tee):
+            if capture_stderr:
+                with redirect_stderr(stderr_tee):
+                    yield log_path
+            else:
+                yield log_path
 
 
 def write_rows_csv(path: Path, rows: Iterable[dict], fieldnames: list[str] | None = None) -> None:
@@ -68,6 +82,11 @@ def write_rows_csv(path: Path, rows: Iterable[dict], fieldnames: list[str] | Non
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_text_log(path: Path, lines: Iterable[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_histories_csv(path: Path, histories: dict[str, dict], metadata: dict | None = None) -> None:

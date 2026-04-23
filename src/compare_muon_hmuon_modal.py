@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-from utils import PROJECT_ROOT, tee_output, timestamped_output_dir, write_histories_csv
+from utils import PROJECT_ROOT, timestamped_output_dir, write_histories_csv, write_text_log
 
 
 app = modal.App("compare-muon-hmuon-h100")
@@ -194,35 +194,39 @@ def main(
     output_dir: str = "results",
 ) -> None:
     output_path = timestamped_output_dir("compare_muon_hmuon_modal", output_dir)
-    with tee_output(output_path):
-        result = train_on_h100.remote(
-            steps=steps,
-            batch_size=batch_size,
-            lr=lr,
-            seed=seed,
-        )
-        save_plots(result, output_path)
-        write_histories_csv(
-            output_path / "history.csv",
-            {"muon": result["muon"], "hmuon": result["hmuon"]},
-            metadata={
-                "steps": result["steps"],
-                "batch_size": result["batch_size"],
-                "lr": result["lr"],
-                "seed": seed,
-                "device": result["device"],
-            },
+    result = train_on_h100.remote(
+        steps=steps,
+        batch_size=batch_size,
+        lr=lr,
+        seed=seed,
+    )
+    save_plots(result, output_path)
+    write_histories_csv(
+        output_path / "history.csv",
+        {"muon": result["muon"], "hmuon": result["hmuon"]},
+        metadata={
+            "steps": result["steps"],
+            "batch_size": result["batch_size"],
+            "lr": result["lr"],
+            "seed": seed,
+            "device": result["device"],
+        },
+    )
+
+    summary_lines = [
+        f"Device: {result['device']}",
+        f"steps={result['steps']} batch_size={result['batch_size']} lr={result['lr']}",
+    ]
+    for name in ("muon", "hmuon"):
+        hist = result[name]
+        summary_lines.append(
+            f"{name:5s}: "
+            f"train_loss={hist['train_loss'][-1]:.4f}, "
+            f"val_loss={hist['val_loss'][-1]:.4f}, "
+            f"val_acc={hist['val_acc'][-1]:.4f}, "
+            f"sec_per_step={hist['sec_per_step'][-1]:.4f}"
         )
 
-        print(f"Device: {result['device']}")
-        print(f"steps={result['steps']} batch_size={result['batch_size']} lr={result['lr']}")
-        for name in ("muon", "hmuon"):
-            hist = result[name]
-            print(
-                f"{name:5s}: "
-                f"train_loss={hist['train_loss'][-1]:.4f}, "
-                f"val_loss={hist['val_loss'][-1]:.4f}, "
-                f"val_acc={hist['val_acc'][-1]:.4f}, "
-                f"sec_per_step={hist['sec_per_step'][-1]:.4f}"
-            )
-        print(f"Saved plots, terminal log, and CSV values to {output_path.resolve()}")
+    write_text_log(output_path / "terminal.log", summary_lines)
+    print("\n".join(summary_lines))
+    print(f"Saved plots, terminal log, and CSV values to {output_path.resolve()}")
